@@ -46,7 +46,11 @@ class TelegramService:
         self.bot_running = False
         self.startup_verification_done = False
         self._bot_thread = None
-        
+
+        # Pagination settings for server list
+        self.server_list_page_size = 10
+        self.server_list_page = 0
+
         # ENHANCED: Thread-safe operations
         self._async_lock = asyncio.Lock()
         self.topic_creation_lock = asyncio.Lock()
@@ -170,7 +174,7 @@ class TelegramService:
                     self.logger.warning(f"Failed to answer callback: {e}")
                 
                 # Route to appropriate handler
-                if data == "servers":
+                if data == "servers" or data.startswith("servers_page_"):
                     self._handle_servers_list(call)
                 elif data == "refresh":
                     self._handle_manual_sync(call)
@@ -537,8 +541,26 @@ class TelegramService:
                 )
                 return
             
+            server_names = list(servers.keys())
+            total_servers = len(server_names)
+
+            # Determine page from callback data
+            if call.data.startswith("servers_page_"):
+                try:
+                    page = int(call.data.replace("servers_page_", "", 1))
+                except ValueError:
+                    page = 0
+            else:
+                page = 0
+
+            self.server_list_page = page
+
+            start = page * self.server_list_page_size
+            end = start + self.server_list_page_size
+            page_servers = server_names[start:end]
+
             markup = InlineKeyboardMarkup()
-            for server_name in list(servers.keys())[:10]:  # Limit to first 10 servers
+            for server_name in page_servers:
                 # Add topic indicator
                 topic_indicator = ""
                 if server_name in self.server_topics:
@@ -559,9 +581,26 @@ class TelegramService:
                     callback_data=f"server_{server_name}"
                 ))
             
+            # Navigation buttons
+            nav_buttons = []
+            if start > 0:
+                nav_buttons.append(
+                    InlineKeyboardButton(
+                        "⬅️ Prev", callback_data=f"servers_page_{page - 1}"
+                    )
+                )
+            if end < total_servers:
+                nav_buttons.append(
+                    InlineKeyboardButton(
+                        "➡️ Next", callback_data=f"servers_page_{page + 1}"
+                    )
+                )
+            if nav_buttons:
+                markup.row(*nav_buttons)
+
             markup.add(InlineKeyboardButton("🔙 Back to Menu", callback_data="start"))
             
-            server_count = len(servers)
+            server_count = total_servers
             topic_count = len(self.server_topics)
             
             text = (
@@ -1682,7 +1721,7 @@ class TelegramService:
             
             text = f"📋 **Discord Servers ({len(servers)} total)**\n\n"
             
-            for server_name in list(servers.keys())[:10]:
+            for server_name in servers.keys():
                 topic_id = self.server_topics.get(server_name)
                 server_info = servers[server_name]
                 channel_count = getattr(server_info, 'channel_count', 0)
@@ -1701,8 +1740,6 @@ class TelegramService:
                 else:
                     text += f"• {server_name} - No topic ({channel_count} channels)\n"
             
-            if len(servers) > 10:
-                text += f"\n... and {len(servers) - 10} more servers"
             
             text += f"\n\n📊 Total channels: {sum(getattr(s, 'channel_count', 0) for s in servers.values())}"
             text += f"\n🛡️ Anti-duplicate protection: {'✅ ACTIVE' if self.startup_verification_done else '⚠️ PENDING'}"
